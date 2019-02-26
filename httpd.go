@@ -132,7 +132,6 @@ var listTemplate = `
       </tr>
       <tr>
       {{ range .Files }}
-
         {{ if (ne (index .Name 0) 46) }}
         <tr>
          <td class="name">
@@ -200,6 +199,7 @@ func showListing(writer http.ResponseWriter, path string) {
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
 		http.Error(writer, "File not found", 404)
+		return
 	}
 
 	t, err := template.New("listTemplate").Parse(listTemplate)
@@ -213,7 +213,7 @@ func showListing(writer http.ResponseWriter, path string) {
 	})
 
 	if err != nil {
-		print(err)
+		panic(err)
 	}
 }
 
