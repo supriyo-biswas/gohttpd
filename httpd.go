@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -80,6 +81,87 @@ var indexFiles = []string {
 	"index.xhtml",
 }
 
+type listTemplateInfo struct {
+	Path string
+	Files []os.FileInfo
+}
+
+var listTemplate = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Index of {{ .Path }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    html, body, table, tr {
+      width: 100%;
+    }
+    .main {
+      max-width: 992px;
+      margin: 0 auto;
+    }
+    h2 {
+      margin-top: 5px;
+      margin-bottom: 5px;
+    }
+    tr {
+      vertical-align: top;
+    }
+    a {
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    td.name {
+      width: 60%;
+    }
+    td.size, td.last-modified {
+      width: 20%;
+    }
+  </style>
+</head>
+<body>
+  <div class="main">
+    <h2>Index of {{ .Path }}</h2>
+    <table>
+      <tr>
+        <td class="name"><b>Name</b></td>
+        <td class="size"><b>Size (bytes)</b></td>
+        <td class="last-modified"><b>Last Modified</b></td>
+      </tr>
+      <tr>
+      {{ range .Files }}
+
+        {{ if (ne (index .Name 0) 46) }}
+        <tr>
+         <td class="name">
+           <a href="{{ .Name }}{{ if .IsDir }}/{{ end }}">
+             {{ .Name }}{{ if .IsDir }}/{{ end }}
+           </a>
+         </td>
+         <td class="size">
+           {{ if .IsDir }}
+             -
+           {{ else }}
+             {{ .Size }}
+           {{ end }}
+         </td>
+         <td class="last-modified">
+           {{ if .IsDir }}
+             -
+           {{ else }}
+             {{ .ModTime.Format "2 Jan 2006 15:04" }}
+           {{ end }}
+         </td>
+        </tr>
+        {{ end }}
+      {{ end }}
+    </table>
+  </div>
+</body>
+</html>`
+
 var gzPool = sync.Pool {
 	New: func() interface{} {
 		w := gzip.NewWriter(ioutil.Discard)
@@ -111,14 +193,35 @@ func stringInSlice(a string, list []string) bool {
 }
 
 func isHiddenPath(path string) bool {
-	if len(path) > 1 && path[0] == '.' {
-		return true
-	}
-
-	return strings.Index(path, "/.") != -1
+	return len(path) > 1 && path[0] == '.' || strings.Index(path, "/.") != -1
 }
 
-func requestHandler(writer http.ResponseWriter, request *http.Request) {
+func showListing(writer http.ResponseWriter, path string) {
+	files, err := ioutil.ReadDir(path)
+	if err != nil {
+		http.Error(writer, "File not found", 404)
+	}
+
+	t, err := template.New("listTemplate").Parse(listTemplate)
+	if err != nil {
+		panic(err)
+	}
+
+	err = t.Execute(writer, listTemplateInfo{
+		Path: path,
+		Files: files,
+	})
+
+	if err != nil {
+		print(err)
+	}
+}
+
+func requestHandler(
+	writer http.ResponseWriter,
+	request *http.Request,
+	listDir bool,
+) {
 	if request.Method != "GET" && request.Method != "HEAD" {
 		http.Error(writer, "Method not allowed", 405)
 		return
@@ -160,7 +263,12 @@ func requestHandler(writer http.ResponseWriter, request *http.Request) {
 		}
 
 		if !found {
-			http.Error(writer, "File not found", 404)
+			if listDir {
+				showListing(writer, path)
+			} else {
+				http.Error(writer, "File not found", 404)
+			}
+
 			return
 		}
 	}
@@ -224,33 +332,40 @@ func requestHandler(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
-func loggingRequestHandler(writer http.ResponseWriter, request *http.Request) {
-	requestTime := time.Now()
-	requestHandler(writer, request)
+func handlerWrap(
+	handler func(http.ResponseWriter, *http.Request, bool),
+	context bool,
+) http.HandlerFunc {
+	return (func(writer http.ResponseWriter, request *http.Request) {
+		requestTime := time.Now()
+		handler(writer, request, context)
 
-	portIndex := strings.LastIndex(request.RemoteAddr, ":")
-	clientIP := request.RemoteAddr[:portIndex]
+		portIndex := strings.LastIndex(request.RemoteAddr, ":")
+		clientIP := request.RemoteAddr[:portIndex]
 
-	reflectWriter := reflect.ValueOf(writer)
-	statusCode := reflectWriter.Elem().FieldByName("status")
+		reflectWriter := reflect.ValueOf(writer)
+		statusCode := reflectWriter.Elem().FieldByName("status")
 
-	fmt.Printf(
-		"%v %#v %v %#v %v %#v %#v\n",
-		clientIP,
-		requestTime.Format(time.RFC822Z),
-		request.Method,
-		request.RequestURI,
-		statusCode,
-		request.Header.Get("Referer"),
-		request.Header.Get("User-Agent"),
-	)
+		fmt.Printf(
+			"%v %#v %v %#v %v %#v %#v\n",
+			clientIP,
+			requestTime.Format(time.RFC822Z),
+			request.Method,
+			request.RequestURI,
+			statusCode,
+			request.Header.Get("Referer"),
+			request.Header.Get("User-Agent"),
+		)
+	})
 }
 
 func mainWithExitCode() int {
 	port := flag.Int("port", 8080, "port number to bind")
 	home := flag.String("home", ".", "web server home directory")
+	listDir := flag.Bool("listdir", false, "enable directory listing")
 
 	flag.Parse()
+
 	if *port < 1 || *port > 65535 {
 		fmt.Println("invalid port number: ", port)
 		flag.PrintDefaults()
@@ -264,13 +379,14 @@ func mainWithExitCode() int {
 	}
 
 	fmt.Println("* Serving on port", *port, "from", *home)
-	http.HandleFunc("/", loggingRequestHandler)
+	http.Handle("/", handlerWrap(requestHandler, *listDir))
 
 	bindPort := fmt.Sprintf(":%d", *port)
 	err := http.ListenAndServe(bindPort, nil)
 
 	if err != nil && err != http.ErrServerClosed {
 		fmt.Println("unable to start server", err)
+		return 1
 	}
 
 	return 0

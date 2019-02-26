@@ -8,6 +8,7 @@ Yet another HTTP web server written in Go (using net/http).
 * Supports If-Modified-Since headers
 * Supports GET and HEAD requests
 * Blocks access to hidden files/directories
+* Directory listing (turned off by default)
 * Request logging
 * No dependencies on external libraries
 
