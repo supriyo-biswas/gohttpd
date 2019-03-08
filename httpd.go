@@ -55,6 +55,7 @@ var mimes = map[string]string {
 
 	// documents
 	"pdf"  : "application/pdf",
+	"csv"  : "text/csv",
 
 	// archives
 	"7z"   : "application/x-ms-compressed",
@@ -64,6 +65,7 @@ var mimes = map[string]string {
 
 var compressExts = []string {
 	"css",
+	"csv",
 	"eot",
 	"html",
 	"js",
